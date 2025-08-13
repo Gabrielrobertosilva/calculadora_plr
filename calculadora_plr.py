@@ -1,4 +1,4 @@
-# calculadora_plr.py – v4 (somente regra de antecipação da PLR)
+# calculadora_plr.py – v5 (regra de antecipação da PLR, com deduplicação e flag de elegibilidade)
 # Rodar com: streamlit run calculadora_plr.py
 
 import streamlit as st
@@ -62,21 +62,14 @@ compensar_planos_proprios = st.sidebar.checkbox(
     "Compensar valores já pagos em 2025 (Regra Básica)", value=False
 )
 
-# (opcionais para simulações livres — não impactam a regra legal)
-st.sidebar.subheader("Parâmetros Opcionais (Simulações Livres)")
-teto_multiplo_salario = st.sidebar.number_input("Teto (x salário)", min_value=0.0, value=3.0, step=0.1)
-piso_valor = st.sidebar.number_input("Piso (valor mínimo)", min_value=0.0, value=0.0, step=100.0)
-min_tempo_casa_meses = st.sidebar.number_input("Tempo mínimo de casa (meses)", min_value=0, value=0, step=1)
-proporcional_por_mes = st.sidebar.checkbox("Proporcional por mês completo (simulação livre)", value=True)
-
 # =========================
-# Título e abas (sem Metas & Pesos)
+# Título e abas
 # =========================
 st.title("Calculadora de PLR – Antecipação 2025")
 st.caption("Aplica apenas a **regra de antecipação** (caput + §1º–§4º).")
 
-aba_base, aba_calc, aba_sim, aba_export = st.tabs(
-    ["Base (Manual/Upload)", "Apuração", "Simulações", "Exportação"]
+aba_base, aba_calc, aba_export = st.tabs(
+    ["Base (Manual/Upload)", "Apuração", "Exportação"]
 )
 
 # =========================
@@ -84,6 +77,8 @@ aba_base, aba_calc, aba_sim, aba_export = st.tabs(
 # =========================
 with aba_base:
     st.subheader("Cadastro da Base: Manual ou Upload")
+
+    dedup_toggle = st.checkbox("Remover duplicatas por Matrícula (manter a última)", value=True)
 
     modo = st.radio("Como deseja informar os dados?", ["Cadastro manual", "Upload (CSV/Excel)"])
 
@@ -105,24 +100,31 @@ with aba_base:
                 dt_desl = st.date_input("Data de desligamento (se houver)", value=None)
                 motivo = st.selectbox("Motivo de afastamento", ["nenhum", "doença", "acidente", "licença-maternidade"])
                 conta_ativa = st.selectbox("Conta corrente ativa no banco?", ["sim", "não"])
+            substituir = st.checkbox("Substituir se Matrícula já existir", value=True)
             add = st.form_submit_button("Adicionar à base")
 
         if add:
-            nova = {
-                "Matricula": matricula,
-                "Nome": nome,
-                "Cargo": cargo,
-                "Salario_Base": salario,
-                "Verbas_Fixas_Salariais": verbas,
-                "Data_Admissao": pd.to_datetime(dt_adm),
-                "Data_Desligamento": pd.to_datetime(dt_desl) if dt_desl else None,
-                "Diretoria": diretoria,
-                "Centro_Custo": cc,
-                "Valor_Pago_2025": valor_pago,
-                "Motivo_Afastamento": motivo,
-                "Conta_Ativa": conta_ativa,
-            }
-            st.session_state.manual_df = pd.concat([st.session_state.manual_df, pd.DataFrame([nova])], ignore_index=True)
+            if not matricula:
+                st.error("Informe a Matrícula antes de adicionar.")
+            else:
+                nova = {
+                    "Matricula": matricula,
+                    "Nome": nome,
+                    "Cargo": cargo,
+                    "Salario_Base": salario,
+                    "Verbas_Fixas_Salariais": verbas,
+                    "Data_Admissao": pd.to_datetime(dt_adm),
+                    "Data_Desligamento": pd.to_datetime(dt_desl) if dt_desl else None,
+                    "Diretoria": diretoria,
+                    "Centro_Custo": cc,
+                    "Valor_Pago_2025": valor_pago,
+                    "Motivo_Afastamento": motivo,
+                    "Conta_Ativa": conta_ativa,
+                }
+                df = st.session_state.manual_df.copy()
+                if substituir and "Matricula" in df.columns:
+                    df = df[df["Matricula"] != matricula]
+                st.session_state.manual_df = pd.concat([df, pd.DataFrame([nova])], ignore_index=True)
 
         st.markdown("### Base (Cadastro manual)")
         st.session_state.manual_df = st.data_editor(
@@ -173,13 +175,17 @@ with aba_base:
     for c in ["Data_Admissao", "Data_Desligamento"]:
         base[c] = pd.to_datetime(base[c], errors="coerce")
 
+    # Deduplicação por Matrícula (mantém a última)
+    if dedup_toggle and "Matricula" in base.columns:
+        base = base.drop_duplicates(subset=["Matricula"], keep="last").reset_index(drop=True)
+
     must_have_values = ["Matricula", "Nome", "Salario_Base", "Data_Admissao"]
     faltantes = [c for c in must_have_values if base[c].isna().all()]
     if faltantes:
         st.warning(f"Estas colunas estão vazias na base: {faltantes}. Preencha/edite antes de apurar.")
 
 # =========================
-# Elegibilidade (caput + §1–§4)
+# Elegibilidade (caput + §1–§4) -> retorna (proporção, motivo)
 # =========================
 def calcular_proporcionalidade_especial(row, data_assinatura):
     # Parse seguro de datas
@@ -188,7 +194,7 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
 
     admissao = pd.to_datetime(admissao_raw, errors="coerce")
     if pd.isna(admissao):
-        return 0.0  # sem admissão não dá pra calcular
+        return 0.0, "Dados insuficientes"
 
     # Trata NaT/None/"" como None (ativo)
     if pd.isna(desligamento_raw) or desligamento_raw in (None, "", "nan"):
@@ -225,24 +231,24 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
 
     # §1º – admitido até 31/12/2023, afastado, ativo na assinatura → integral
     if (admissao <= pd.Timestamp("2023-12-31")) and (motivo in ["doença", "acidente", "licença-maternidade"]) and (desligamento is None or desligamento > assinatura):
-        return 1.0
+        return 1.0, "§1º"
 
     # §2º – admitido a partir de 01/01/2024, em efetivo exercício na assinatura (mesmo afastado) → proporcional até 31/12/2024
     if (admissao >= pd.Timestamp("2024-01-01")) and (desligamento is None or desligamento > assinatura):
         meses = meses_12avos(admissao, pd.Timestamp("2024-12-31"))
-        return float(meses / 12.0)
+        return float(meses / 12.0), "§2º"
 
     # §3º – dispensado sem justa causa entre 02/08/2024 e a assinatura → proporcional até desligamento
     if (desligamento is not None) and (pd.Timestamp("2024-08-02") <= desligamento <= assinatura):
         meses = meses_12avos(admissao, desligamento)
-        return float(meses / 12.0)
+        return float(meses / 12.0), "§3º"
 
     # CAPUT – empregado ativo na data da assinatura (não desligado até a assinatura) → integral
     if (desligamento is None) or (desligamento > assinatura):
-        return 1.0
+        return 1.0, "Caput"
 
     # §4º – não elegível
-    return 0.0
+    return 0.0, "§4º – Não elegível"
 
 # =========================
 # Apuração
@@ -268,12 +274,18 @@ with aba_calc:
             base_calc = base.copy()
 
             # Proporcionalidade (caput + parágrafos)
-            base_calc["Proporcionalidade"] = base_calc.apply(
-                lambda r: calcular_proporcionalidade_especial(r, data_assinatura_cct), axis=1
-            )
+            props = base_calc.apply(lambda r: calcular_proporcionalidade_especial(r, data_assinatura_cct), axis=1)
+            base_calc["Proporcionalidade"] = props.apply(lambda x: x[0])
+            base_calc["Motivo_Elegibilidade"] = props.apply(lambda x: x[1])
+            base_calc["Elegivel"] = np.where(base_calc["Proporcionalidade"] > 0, "Sim", "Não")
 
             # Elegíveis
             elegiveis = base_calc[base_calc["Proporcionalidade"] > 0].copy()
+
+            # Deduplicação por Matrícula antes de qualquer soma/merge
+            if "Matricula" in elegiveis.columns:
+                elegiveis = elegiveis.drop_duplicates(subset=["Matricula"], keep="last")
+
             n_elegiveis = int(elegiveis.shape[0])
 
             if n_elegiveis == 0:
@@ -312,11 +324,12 @@ with aba_calc:
                     st.warning("O lucro 1S/2025 está 0. A Parcela Adicional (2,2%) será 0.")
                 elegiveis["Adicional_Final"] = adic_unitario
 
-                # Merge back
+                # Merge back (com base sem duplicatas por Matrícula)
+                base_calc = base_calc.drop_duplicates(subset=["Matricula"], keep="last")
                 base_calc = base_calc.merge(
                     elegiveis[[
                         "Matricula", "Basica_Final", "Adicional_Final",
-                        "Basica_Pos_Global", "Basica_Indiv_Cap", "Base_PLR_Basica", "Proporcionalidade"
+                        "Basica_Pos_Global", "Basica_Indiv_Cap", "Base_PLR_Basica"
                     ]],
                     on="Matricula", how="left"
                 )
@@ -339,7 +352,8 @@ with aba_calc:
                 # Exibição segura
                 desired_cols = [
                     "Matricula", "Nome", "Cargo", "Diretoria", "Centro_Custo",
-                    "Salario_Base", "Verbas_Fixas_Salariais", "Motivo_Afastamento", "Proporcionalidade",
+                    "Salario_Base", "Verbas_Fixas_Salariais",
+                    "Elegivel", "Motivo_Elegibilidade", "Proporcionalidade",
                     "Base_PLR_Basica", "Basica_Indiv_Cap", "Basica_Pos_Global", "Basica_Final",
                     "Adicional_Final", "PLR_Antecipacao_Total"
                 ]
@@ -364,41 +378,6 @@ with aba_calc:
                     "Pool Parcela Adicional (2,2% do lucro)": pool_adic,
                     "Adicional unitário (após limite indiv.)": adic_unitario,
                 })
-
-# =========================
-# Simulações (livres)
-# =========================
-with aba_sim:
-    st.subheader("Simulações Rápidas (índice livre/teto geral) – não alteram a regra legal")
-    colA, colB = st.columns(2)
-    with colA:
-        sim_indice = st.slider("Simular índice composto (x)", min_value=0.0, max_value=3.0, value=1.0, step=0.05)
-    with colB:
-        sim_teto = st.slider("Simular teto (x salário)", min_value=0.0, max_value=6.0, value=float(teto_multiplo_salario), step=0.1)
-
-    sim = st.session_state.manual_df.copy()
-    if sim.empty:
-        st.info("Sem base para simulação livre. Cadastre manualmente ou faça upload na aba Base.")
-    else:
-        if "Tempo_Casa_Meses" not in sim.columns:
-            sim["Tempo_Casa_Meses"] = np.nan
-
-        def prop_generica(row):
-            meses = row.get("Tempo_Casa_Meses", np.nan)
-            if pd.isna(meses):
-                return 1.0
-            if meses < min_tempo_casa_meses:
-                return 0.0
-            return min(1.0, max(0.0, meses / 12.0)) if proporcional_por_mes else 1.0
-
-        sim["Proporcionalidade_Generica"] = sim.apply(lambda r: prop_generica(r), axis=1)
-        for c in ["Salario_Base"]:
-            sim[c] = pd.to_numeric(sim[c], errors="coerce").fillna(0.0)
-        sim["PLR_Sim"] = sim["Salario_Base"].astype(float) * sim_indice * sim["Proporcionalidade_Generica"]
-        sim["PLR_Sim"] = sim["PLR_Sim"].clip(lower=piso_valor, upper=sim["Salario_Base"].astype(float) * sim_teto)
-
-        st.dataframe(sim[["Matricula", "Nome", "Salario_Base", "Proporcionalidade_Generica", "PLR_Sim"]].round(2), use_container_width=True)
-        st.metric(label=f"Custo Total Simulado ({moeda})", value=f"{sim['PLR_Sim'].sum():,.2f}")
 
 # =========================
 # Exportação

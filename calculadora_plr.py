@@ -1,7 +1,7 @@
-# calculadora_plr.py – v7
-# - Parcela Adicional proporcional à Proporcionalidade (meses/12)
-# - Motivo_Elegibilidade detalhado
-# - Entrada simplificada: apenas "Salario" (demais campos derivados)
+# calculadora_plr.py – v8
+# Ajustes:
+# - Parcela Adicional: teto individual (R$ 3.471,13) proporcional à Proporcionalidade (meses/12)
+# - Formatação BRL na UI com ponto como separador decimal
 #
 # Rodar: streamlit run calculadora_plr.py
 
@@ -17,16 +17,12 @@ st.set_page_config(page_title="Calculadora de PLR – Antecipação 2025", layou
 # =========================
 REQUIRED_COLS = [
     "Matricula", "Nome", "Cargo",
-    "Salario",                        # <- agora pedimos só Salario
+    "Salario",                        # apenas "Salario"
     "Data_Admissao", "Data_Desligamento",
     "Diretoria", "Centro_Custo",
     "Valor_Pago_2025", "Motivo_Afastamento", "Conta_Ativa"
 ]
-
-# Colunas derivadas (não exigidas no upload)
-DERIVED_COLS = [
-    "Salario_Base", "Verbas_Fixas_Salariais"
-]
+DERIVED_COLS = ["Salario_Base", "Verbas_Fixas_Salariais"]
 
 DEFAULTS = {
     "Salario": 0.0,
@@ -41,9 +37,46 @@ DEFAULTS = {
 # Estado inicial
 if "manual_df" not in st.session_state:
     st.session_state.manual_df = pd.DataFrame(columns=REQUIRED_COLS + DERIVED_COLS)
-
 if "data_assinatura_cct" not in st.session_state:
     st.session_state.data_assinatura_cct = pd.to_datetime("2025-09-01").date()
+
+# =========================
+# Helpers de formatação
+# =========================
+def fmt_brl(x) -> str:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return "R$ 0.00"
+    # Usa vírgula para milhar e ponto para decimal (estilo en_US)
+    return f"R$ {v:,.2f}"
+
+def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = df.columns.str.strip()
+
+    # Compat: se não vier "Salario" mas vierem as colunas antigas, somar para formar "Salario"
+    if "Salario" not in df.columns:
+        if ("Salario_Base" in df.columns) and ("Verbas_Fixas_Salariais" in df.columns):
+            df["Salario"] = pd.to_numeric(df["Salario_Base"], errors="coerce").fillna(0.0) + \
+                            pd.to_numeric(df["Verbas_Fixas_Salariais"], errors="coerce").fillna(0.0)
+        else:
+            df["Salario"] = 0.0
+
+    for col in REQUIRED_COLS:
+        if col not in df.columns:
+            df[col] = DEFAULTS.get(col, np.nan)
+
+    df["Salario"] = pd.to_numeric(df["Salario"], errors="coerce").fillna(0.0)
+    df["Valor_Pago_2025"] = pd.to_numeric(df.get("Valor_Pago_2025", 0.0), errors="coerce").fillna(0.0)
+    for c in ["Data_Admissao", "Data_Desligamento"]:
+        df[c] = pd.to_datetime(df[c], errors="coerce")
+
+    # Derivados a partir de "Salario"
+    df["Salario_Base"] = df["Salario"] / 1.55
+    df["Verbas_Fixas_Salariais"] = df["Salario_Base"] * 0.55
+
+    return df
 
 # =========================
 # Sidebar
@@ -75,44 +108,9 @@ compensar_planos_proprios = st.sidebar.checkbox(
 # Título e abas
 # =========================
 st.title("Calculadora de PLR – Antecipação 2025")
-st.caption("Regra de antecipação (caput + §1º–§4º) com adicional proporcional aos meses trabalhados.")
+st.caption("Regra de antecipação (caput + §1º–§4º) com adicional e seu teto individual proporcionais aos meses/12.")
 
-aba_base, aba_calc, aba_export = st.tabs(
-    ["Base (Manual/Upload)", "Apuração", "Exportação"]
-)
-
-# =========================
-# Helpers
-# =========================
-def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = df.columns.str.strip()
-
-    # Compatibilidade: se vier sem "Salario" mas com as antigas, cria Salario = soma
-    if "Salario" not in df.columns:
-        if ("Salario_Base" in df.columns) and ("Verbas_Fixas_Salariais" in df.columns):
-            df["Salario"] = pd.to_numeric(df["Salario_Base"], errors="coerce").fillna(0.0) + \
-                            pd.to_numeric(df["Verbas_Fixas_Salariais"], errors="coerce").fillna(0.0)
-        else:
-            df["Salario"] = 0.0
-
-    # Preenche obrigatórias
-    for col in REQUIRED_COLS:
-        if col not in df.columns:
-            df[col] = DEFAULTS.get(col, np.nan)
-
-    # Tipos
-    df["Salario"] = pd.to_numeric(df["Salario"], errors="coerce").fillna(0.0)
-    for c in ["Valor_Pago_2025"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    for c in ["Data_Admissao", "Data_Desligamento"]:
-        df[c] = pd.to_datetime(df[c], errors="coerce")
-
-    # Deriva Salario_Base e Verbas_Fixas_Salariais a partir de Salario
-    df["Salario_Base"] = df["Salario"] / 1.55
-    df["Verbas_Fixas_Salariais"] = df["Salario_Base"] * 0.55
-
-    return df
+aba_base, aba_calc, aba_export = st.tabs(["Base (Manual/Upload)", "Apuração", "Exportação"])
 
 # =========================
 # Base (Manual/Upload)
@@ -167,7 +165,6 @@ with aba_base:
                 st.session_state.manual_df = pd.concat([df, pd.DataFrame([nova])], ignore_index=True)
 
         st.markdown("### Base (Cadastro manual)")
-        # Deriva colunas antes de exibir
         st.session_state.manual_df = ensure_required_columns(st.session_state.manual_df)
         st.session_state.manual_df = st.data_editor(
             st.session_state.manual_df,
@@ -176,7 +173,7 @@ with aba_base:
             key="editor_manual"
         )
 
-        # Template CSV com novas colunas
+        # Template CSV
         tmpl = pd.DataFrame(columns=REQUIRED_COLS)
         csv_bytes = tmpl.to_csv(index=False).encode("utf-8")
         st.download_button("Baixar template CSV", data=csv_bytes, file_name="template_plr.csv", mime="text/csv")
@@ -188,7 +185,6 @@ with aba_base:
         up = st.file_uploader("CSV ou Excel (UTF-8)", type=["csv", "xlsx"])
 
         if up is None:
-            # Base vazia (não quebra cálculos)
             base = pd.DataFrame(columns=REQUIRED_COLS)
             st.info("Nenhum arquivo carregado. A base está vazia (você pode usar o cadastro manual).")
         else:
@@ -204,14 +200,13 @@ with aba_base:
     if dedup_toggle and "Matricula" in base.columns:
         base = base.drop_duplicates(subset=["Matricula"], keep="last").reset_index(drop=True)
 
-    # Aviso se campos críticos estão todos vazios
     must_have_values = ["Matricula", "Nome", "Salario", "Data_Admissao"]
     faltantes = [c for c in must_have_values if base[c].isna().all()]
     if faltantes:
         st.warning(f"Estas colunas estão vazias na base: {faltantes}. Preencha/edite antes de apurar.")
 
 # =========================
-# Elegibilidade (caput + §1–§4) – 2025 – retorna (proporção, motivo, meses)
+# Elegibilidade 2025 (caput + §1–§4) – retorna (proporção, motivo, meses)
 # =========================
 def calcular_proporcionalidade_especial(row, data_assinatura):
     admissao = pd.to_datetime(row.get("Data_Admissao"), errors="coerce")
@@ -220,7 +215,6 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
     if pd.isna(admissao):
         return 0.0, "Dados insuficientes (sem Data_Admissao)", 0.0
 
-    # Trata NaT/None/"" como None (ativo)
     if pd.isna(desligamento_raw) or desligamento_raw in (None, "", "nan"):
         desligamento = None
     else:
@@ -255,7 +249,7 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
     if (admissao <= pd.Timestamp("2024-12-31")) and (motivo in ["doença", "acidente", "licença-maternidade"]) and (desligamento is None or desligamento > assinatura):
         return 1.0, "§1º – Admitido até 31/12/2024 com afastamento coberto; ativo na assinatura (integral).", 12.0
 
-    # §2º – admitido a partir de 01/01/2025, em efetivo exercício na assinatura → proporcional até 31/12/2025
+    # §2º – admitido a partir de 01/01/2025, efetivo na assinatura → proporcional até 31/12/2025
     if (admissao >= pd.Timestamp("2025-01-01")) and (desligamento is None or desligamento > assinatura):
         meses = meses_12avos(admissao, pd.Timestamp("2025-12-31"))
         prop = float(meses / 12.0)
@@ -317,10 +311,10 @@ with aba_calc:
                 # Regra Básica: 54% * Salario + FIXO, vezes proporcionalidade
                 elegiveis["Base_PLR_Basica"] = (0.54 * elegiveis["Salario"].astype(float) + FIXO_BASICA) * elegiveis["Proporcionalidade"]
 
-                # Cap individual
+                # Cap individual (Básica)
                 elegiveis["Basica_Indiv_Cap"] = elegiveis["Base_PLR_Basica"].clip(upper=LIMITE_BASICA_INDIV)
 
-                # Cap global 12,8% do lucro 1S/2025
+                # Cap global 12,8% do lucro 1S/2025 (Básica)
                 total_basica_pre_cap = float(elegiveis["Basica_Indiv_Cap"].sum())
                 limite_global_basica = PCT_LUCRO_BASICA * float(lucro_liquido_1s2025)
                 fator_cap = 1.0
@@ -330,14 +324,14 @@ with aba_calc:
                     fator_cap = limite_global_basica / total_basica_pre_cap
                 elegiveis["Basica_Pos_Global"] = elegiveis["Basica_Indiv_Cap"] * fator_cap
 
-                # Compensação
+                # Compensação (Básica)
                 if compensar_planos_proprios:
                     pagos = elegiveis["Valor_Pago_2025"].astype(float).fillna(0.0)
                     elegiveis["Basica_Final"] = (elegiveis["Basica_Pos_Global"] - pagos).clip(lower=0.0)
                 else:
                     elegiveis["Basica_Final"] = elegiveis["Basica_Pos_Global"]
 
-                # Parcela Adicional – proporcional aos meses (Proporcionalidade)
+                # Parcela Adicional – proporcional aos meses (Proporcionalidade) + teto individual proporcional
                 pool_adic = PCT_LUCRO_ADIC * float(lucro_liquido_1s2025)
                 if pool_adic == 0:
                     st.warning("O lucro 1S/2025 está 0. A Parcela Adicional (2,2%) será 0.")
@@ -346,61 +340,81 @@ with aba_calc:
                     elegiveis["Adicional_Base"] = pool_adic * (elegiveis["Proporcionalidade"] / soma_props)
                 else:
                     elegiveis["Adicional_Base"] = 0.0
-                elegiveis["Adicional_Final"] = elegiveis["Adicional_Base"].clip(upper=LIMITE_ADIC_INDIV)
+
+                # Teto individual proporcional: 3.471,13 * Proporcionalidade
+                elegiveis["Teto_Adic_Proporcional"] = LIMITE_ADIC_INDIV * elegiveis["Proporcionalidade"].clip(lower=0.0, upper=1.0)
+                elegiveis["Adicional_Final"] = np.minimum(elegiveis["Adicional_Base"], elegiveis["Teto_Adic_Proporcional"])
 
                 # Merge back (com base sem duplicatas por Matrícula)
                 base_calc = base_calc.drop_duplicates(subset=["Matricula"], keep="last")
                 base_calc = base_calc.merge(
                     elegiveis[[
-                        "Matricula", "Basica_Final", "Adicional_Final", "Adicional_Base",
+                        "Matricula", "Basica_Final",
+                        "Adicional_Base", "Teto_Adic_Proporcional", "Adicional_Final",
                         "Basica_Pos_Global", "Basica_Indiv_Cap", "Base_PLR_Basica"
                     ]],
                     on="Matricula", how="left"
                 )
-                for col in ["Basica_Final", "Adicional_Final", "Adicional_Base", "Basica_Pos_Global", "Basica_Indiv_Cap", "Base_PLR_Basica"]:
+                for col in ["Basica_Final", "Adicional_Final", "Adicional_Base", "Teto_Adic_Proporcional",
+                            "Basica_Pos_Global", "Basica_Indiv_Cap", "Base_PLR_Basica"]:
                     base_calc[col] = base_calc[col].fillna(0.0)
 
                 base_calc["PLR_Antecipacao_Total"] = base_calc["Basica_Final"] + base_calc["Adicional_Final"]
 
-                # Métricas
+                # ===== Exibição com formatação BRL (apenas na UI) =====
+                money_cols = [
+                    "Salario", "Base_PLR_Basica", "Basica_Indiv_Cap", "Basica_Pos_Global", "Basica_Final",
+                    "Adicional_Base", "Teto_Adic_Proporcional", "Adicional_Final", "PLR_Antecipacao_Total"
+                ]
+                display_df = base_calc.copy()
+                for c in money_cols:
+                    if c in display_df.columns:
+                        display_df[c] = display_df[c].apply(fmt_brl)
+
+                # Métricas (formatadas)
+                total_basica_final = base_calc["Basica_Final"].sum()
+                total_adicional_final = base_calc["Adicional_Final"].sum()
+                total_antecipacao = base_calc["PLR_Antecipacao_Total"].sum()
+
                 colm1, colm2, colm3, colm4 = st.columns(4)
                 with colm1:
                     st.metric("Elegíveis", f"{n_elegiveis}")
                 with colm2:
-                    st.metric("Total Regra Básica (após cap)", f"{base_calc['Basica_Final'].sum():,.2f}")
+                    st.metric("Total Regra Básica (após cap)", fmt_brl(total_basica_final))
                 with colm3:
-                    st.metric("Total Parcela Adicional (pós cap indiv.)", f"{base_calc['Adicional_Final'].sum():,.2f}")
+                    st.metric("Total Parcela Adicional (pós cap indiv.)", fmt_brl(total_adicional_final))
                 with colm4:
-                    st.metric("Antecipação Total", f"{base_calc['PLR_Antecipacao_Total'].sum():,.2f}")
+                    st.metric("Antecipação Total", fmt_brl(total_antecipacao))
 
-                # Exibição
+                st.markdown("### Resultado por Colaborador")
                 desired_cols = [
                     "Matricula", "Nome", "Cargo", "Diretoria", "Centro_Custo",
                     "Salario", "Elegivel", "Motivo_Elegibilidade", "Meses_Contabilizados", "Proporcionalidade",
                     "Base_PLR_Basica", "Basica_Indiv_Cap", "Basica_Pos_Global", "Basica_Final",
-                    "Adicional_Base", "Adicional_Final", "PLR_Antecipacao_Total"
+                    "Adicional_Base", "Teto_Adic_Proporcional", "Adicional_Final", "PLR_Antecipacao_Total"
                 ]
-                display_cols = [c for c in desired_cols if c in base_calc.columns]
-                missing_cols = [c for c in desired_cols if c not in base_calc.columns]
+                display_cols = [c for c in desired_cols if c in display_df.columns]
+                missing_cols = [c for c in desired_cols if c not in display_df.columns]
                 if missing_cols:
                     st.info(f"Colunas ausentes ocultadas: {missing_cols}")
-
-                st.markdown("### Resultado por Colaborador")
-                st.dataframe(base_calc[display_cols].round(2), use_container_width=True)
+                st.dataframe(display_df[display_cols], use_container_width=True)
 
                 st.markdown("### Totais por Diretoria")
                 if "Diretoria" in base_calc.columns and not base_calc["Diretoria"].isna().all():
                     tot_dir = base_calc.groupby("Diretoria", as_index=False)["PLR_Antecipacao_Total"].sum()
-                    st.dataframe(tot_dir.rename(columns={"PLR_Antecipacao_Total": "Total_Antecipacao"}).round(2), use_container_width=True)
+                    tot_dir_display = tot_dir.copy()
+                    tot_dir_display["PLR_Antecipacao_Total"] = tot_dir_display["PLR_Antecipacao_Total"].apply(fmt_brl)
+                    st.dataframe(tot_dir_display.rename(columns={"PLR_Antecipacao_Total": "Total_Antecipacao"}), use_container_width=True)
 
                 st.markdown("### Verificações e Limites")
-                st.write({
-                    "Teto Global Regra Básica (12,8% do lucro)": PCT_LUCRO_BASICA * float(lucro_liquido_1s2025),
-                    "Soma Individuais antes do cap (Básica)": total_basica_pre_cap,
-                    "Fator de Redução Aplicado (Básica)": fator_cap,
-                    "Pool Parcela Adicional (2,2% do lucro)": pool_adic,
-                    "Soma Proporcionalidades (para Adicional)": soma_props,
-                })
+                debug_data = {
+                    "Teto Global Regra Básica (12,8% do lucro)": fmt_brl(PCT_LUCRO_BASICA * float(lucro_liquido_1s2025)),
+                    "Soma Individuais antes do cap (Básica)": fmt_brl(total_basica_pre_cap),
+                    "Fator de Redução Aplicado (Básica)": f"{fator_cap:0.6f}",
+                    "Pool Parcela Adicional (2,2% do lucro)": fmt_brl(pool_adic),
+                    "Soma Proporcionalidades (para Adicional)": f"{soma_props:0.6f}",
+                }
+                st.write(debug_data)
 
 # =========================
 # Exportação
@@ -415,6 +429,7 @@ with aba_export:
                 df.to_excel(writer, index=False, sheet_name=name)
         return output.getvalue()
 
+    # Exporta dados numéricos (sem strings formatadas), para manter cálculos no Excel
     if "base_calc" in locals() and 'PLR_Antecipacao_Total' in base_calc.columns and not base.empty:
         sheets = {"Resultado_Antecipacao": base_calc.round(2)}
         if "Diretoria" in base_calc.columns and not base_calc["Diretoria"].isna().all():

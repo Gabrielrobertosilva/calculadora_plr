@@ -1,7 +1,6 @@
-# calculadora_plr.py – v8
-# Ajustes:
-# - Parcela Adicional: teto individual (R$ 3.471,13) proporcional à Proporcionalidade (meses/12)
-# - Formatação BRL na UI com ponto como separador decimal
+# calculadora_plr.py – v9
+# Ajuste: formatação BRL "R$ 6.485,86" na UI (Excel exporta números puros)
+# Mantém: adicional com teto proporcional aos meses; entrada só "Salario"
 #
 # Rodar: streamlit run calculadora_plr.py
 
@@ -47,9 +46,9 @@ def fmt_brl(x) -> str:
     try:
         v = float(x)
     except (TypeError, ValueError):
-        return "R$ 0.00"
-    # Usa vírgula para milhar e ponto para decimal (estilo en_US)
-    return f"R$ {v:,.2f}"
+        return "R$ 0,00"
+    # Formata como en_US e depois troca separadores para pt_BR: milhar '.' e decimal ','
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -417,7 +416,7 @@ with aba_calc:
                 st.write(debug_data)
 
 # =========================
-# Exportação
+# Exportação (números puros)
 # =========================
 with aba_export:
     st.subheader("Exportar Resultado")

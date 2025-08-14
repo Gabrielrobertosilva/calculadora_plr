@@ -1,6 +1,6 @@
-# calculadora_plr.py – v9
-# Ajuste: formatação BRL "R$ 6.485,86" na UI (Excel exporta números puros)
-# Mantém: adicional com teto proporcional aos meses; entrada só "Salario"
+# calculadora_plr.py – v10
+# Novidade: mês de admissão só conta se a admissão for <= dia 15
+# Mantém: adicional com teto proporcional aos meses; entrada só "Salario"; UI BRL "R$ 6.485,86"
 #
 # Rodar: streamlit run calculadora_plr.py
 
@@ -16,7 +16,7 @@ st.set_page_config(page_title="Calculadora de PLR – Antecipação 2025", layou
 # =========================
 REQUIRED_COLS = [
     "Matricula", "Nome", "Cargo",
-    "Salario",                        # apenas "Salario"
+    "Salario",
     "Data_Admissao", "Data_Desligamento",
     "Diretoria", "Centro_Custo",
     "Valor_Pago_2025", "Motivo_Afastamento", "Conta_Ativa"
@@ -47,7 +47,6 @@ def fmt_brl(x) -> str:
         v = float(x)
     except (TypeError, ValueError):
         return "R$ 0,00"
-    # Formata como en_US e depois troca separadores para pt_BR: milhar '.' e decimal ','
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -228,6 +227,10 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
     assinatura = pd.to_datetime(data_assinatura)
 
     def meses_12avos(inicio, fim):
+        """
+        Conta 1/12 por mês com fração >= 15 dias,
+        MAS o mês de admissão só conta se o dia da admissão for <= 15.
+        """
         if pd.isna(inicio) or pd.isna(fim) or inicio > fim:
             return 0.0
         total = 0
@@ -239,8 +242,19 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
             seg_ini = max(inicio, mes_ini)
             seg_fim = min(fim, mes_fim)
             dias = (seg_fim - seg_ini).days + 1
-            if dias >= 15:
+
+            conta_mes = False
+            # Se for o mês da admissão, exige dia <= 15 para poder contar
+            if (cur.year == inicio.year) and (cur.month == inicio.month):
+                if inicio.day <= 15 and dias >= 15:
+                    conta_mes = True
+            else:
+                if dias >= 15:
+                    conta_mes = True
+
+            if conta_mes:
                 total += 1
+
             cur = cur + pd.offsets.MonthBegin(1)
         return min(12.0, float(total))
 
@@ -428,7 +442,6 @@ with aba_export:
                 df.to_excel(writer, index=False, sheet_name=name)
         return output.getvalue()
 
-    # Exporta dados numéricos (sem strings formatadas), para manter cálculos no Excel
     if "base_calc" in locals() and 'PLR_Antecipacao_Total' in base_calc.columns and not base.empty:
         sheets = {"Resultado_Antecipacao": base_calc.round(2)}
         if "Diretoria" in base_calc.columns and not base_calc["Diretoria"].isna().all():

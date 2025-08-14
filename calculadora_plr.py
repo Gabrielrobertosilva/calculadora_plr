@@ -1,4 +1,4 @@
-# calculadora_plr.py – v5 (regra de antecipação da PLR, com deduplicação e flag de elegibilidade)
+# calculadora_plr.py – v6 (regra de antecipação da PLR para 2025, com deduplicação e flag de elegibilidade)
 # Rodar com: streamlit run calculadora_plr.py
 
 import streamlit as st
@@ -229,17 +229,18 @@ def calcular_proporcionalidade_especial(row, data_assinatura):
             cur = cur + pd.offsets.MonthBegin(1)
         return min(12.0, float(total))
 
-    # §1º – admitido até 31/12/2023, afastado, ativo na assinatura → integral
-    if (admissao <= pd.Timestamp("2023-12-31")) and (motivo in ["doença", "acidente", "licença-maternidade"]) and (desligamento is None or desligamento > assinatura):
+    # ====== Datas ajustadas para 2025 ======
+    # §1º – admitido até 31/12/2024, afastado, ativo na assinatura → integral
+    if (admissao <= pd.Timestamp("2024-12-31")) and (motivo in ["doença", "acidente", "licença-maternidade"]) and (desligamento is None or desligamento > assinatura):
         return 1.0, "§1º"
 
-    # §2º – admitido a partir de 01/01/2024, em efetivo exercício na assinatura (mesmo afastado) → proporcional até 31/12/2024
-    if (admissao >= pd.Timestamp("2024-01-01")) and (desligamento is None or desligamento > assinatura):
-        meses = meses_12avos(admissao, pd.Timestamp("2024-12-31"))
+    # §2º – admitido a partir de 01/01/2025, em efetivo exercício na assinatura (mesmo afastado) → proporcional até 31/12/2025
+    if (admissao >= pd.Timestamp("2025-01-01")) and (desligamento is None or desligamento > assinatura):
+        meses = meses_12avos(admissao, pd.Timestamp("2025-12-31"))
         return float(meses / 12.0), "§2º"
 
-    # §3º – dispensado sem justa causa entre 02/08/2024 e a assinatura → proporcional até desligamento
-    if (desligamento is not None) and (pd.Timestamp("2024-08-02") <= desligamento <= assinatura):
+    # §3º – dispensado sem justa causa entre 02/08/2025 e a assinatura → proporcional até desligamento
+    if (desligamento is not None) and (pd.Timestamp("2025-08-02") <= desligamento <= assinatura):
         meses = meses_12avos(admissao, desligamento)
         return float(meses / 12.0), "§3º"
 
